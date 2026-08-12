@@ -1,0 +1,37 @@
+# ═══════════════════════════════════════════════════════════════
+# COSFERIA — Configuracion de Netlify
+# Colocar este archivo en la RAIZ del proyecto (junto a package.json)
+# ═══════════════════════════════════════════════════════════════
+
+[build]
+  # prisma generate DEBE correr antes del build.
+  # Netlify cachea node_modules entre deploys, y el cliente generado
+  # vive dentro de node_modules/.prisma. Sin este paso explicito, el
+  # build usa un cliente viejo o directamente inexistente.
+  command = "npx prisma generate && npm run build"
+  publish = ".next"
+
+# Plugin oficial: sin esto Netlify no sabe servir App Router,
+# Server Actions ni Route Handlers. Los trata como archivos estaticos
+# y todo lo dinamico devuelve error 500.
+[[plugins]]
+  package = "@netlify/plugin-nextjs"
+
+[build.environment]
+  NODE_VERSION = "20"
+  # Evita que npm falle por peer dependencies estrictas
+  NPM_FLAGS = "--legacy-peer-deps"
+
+# Las funciones que corren OCR y suben archivos necesitan mas tiempo
+# y memoria que el default.
+[functions]
+  node_bundler = "esbuild"
+  # Los binarios de Prisma no los detecta el bundler solo:
+  # hay que incluirlos a mano o falla en runtime.
+  included_files = ["node_modules/.prisma/client/**"]
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"

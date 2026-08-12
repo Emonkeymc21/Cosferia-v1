@@ -1,0 +1,20 @@
+// ═══════════════════════════════════════════════════════════════
+// REEMPLAZAR el bloque "generator client" de prisma/schema.prisma
+// por este. Es el arreglo mas probable para el error 500 en Netlify.
+// ═══════════════════════════════════════════════════════════════
+
+generator client {
+  provider = "prisma-client-js"
+
+  // ESTA LINEA ES LA CLAVE.
+  // Prisma compila un binario distinto por sistema operativo. En tu
+  // maquina genera el de tu SO; en Netlify la funcion corre sobre AWS
+  // Lambda con Amazon Linux 2023 y OpenSSL 3, y ese binario no existe
+  // en el paquete. Resultado: la primera query tira un 500 generico
+  // como el que estas viendo.
+  //
+  // "native"            -> tu maquina, para desarrollo local
+  // "rhel-openssl-3.0.x" -> Netlify Functions y Vercel (runtime nuevo)
+  // "rhel-openssl-1.0.x" -> agregar solo si el log pide esa version
+  binaryTargets = ["native", "rhel-openssl-3.0.x"]
+}
