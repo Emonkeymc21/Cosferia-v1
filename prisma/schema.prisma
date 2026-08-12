@@ -23,6 +23,13 @@
 
 generator client {
   provider = "prisma-client-js"
+
+  // Prisma compila un binario distinto por sistema operativo. En tu
+  // maquina se genera el de tu SO; en Netlify o Vercel la funcion
+  // corre sobre AWS Lambda con Amazon Linux y OpenSSL 3. Sin declarar
+  // ese target, el binario no se empaqueta y la primera query tira un
+  // error 500 generico ("a server-side exception has occurred").
+  binaryTargets = ["native", "rhel-openssl-3.0.x"]
 }
 
 datasource db {
