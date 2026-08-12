@@ -1,0 +1,361 @@
+// ═══════════════════════════════════════════════════════════════
+// COSFERIA — Schema de base de datos
+// Supabase Postgres + Prisma ORM
+//
+// DECISIONES DE DISENO
+//
+// 1. DINERO EN CENTAVOS (Int). $45.000 => 4500000.
+//    Nunca Float (errores de redondeo) ni Decimal (obliga a arrastrar
+//    decimal.js por toda la app). Ver src/lib/money.ts.
+//
+// 2. EL ID DE USER ES EL UUID DE SUPABASE AUTH.
+//    No generamos id propio: usamos el de auth.users para que la
+//    sesion del middleware mapee directo a la fila sin un join extra.
+//    Prisma no puede declarar la FK a auth.users (otro schema), asi
+//    que la integridad se mantiene por trigger en Supabase (ver README).
+//
+// 3. RLS Y PRISMA.
+//    Prisma se conecta con el rol postgres, que ignora Row Level
+//    Security. Toda la autorizacion vive en las Server Actions
+//    (src/app/actions/*). Las policies de RLS son la segunda linea
+//    de defensa para el acceso directo desde el cliente Supabase.
+// ═══════════════════════════════════════════════════════════════
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")  // pooled, pgbouncer
+  directUrl = env("DIRECT_URL")    // directa, para migraciones
+}
+
+// ─────────────────────────── Enums ───────────────────────────
+
+enum Role {
+  BUYER
+  MAKER
+  ORGANIZER
+  ADMIN
+}
+
+/// Los 4 labels obligatorios de origen del producto.
+enum ProductOrigin {
+  HANDMADE // Trabajo a mano / Cosmaker
+  NATIONAL // Industria Argentina
+  IMPORTED // Comprado en el exterior
+  USED     // Segunda Mano / Usado
+}
+
+enum ProductStatus {
+  DRAFT
+  LIVE
+  RESERVED // hay una orden abierta: no se puede comprar de nuevo
+  SOLD
+  PAUSED
+}
+
+enum OrderStatus {
+  AWAITING_RECEIPT // esperando que el comprador suba el comprobante
+  VERIFYING        // comprobante subido, en triage o revision
+  CONFIRMED        // el vendedor confirmo el pago
+  REJECTED         // comprobante rechazado
+  SHIPPED
+  COMPLETED
+  CANCELLED
+}
+
+enum DeliveryMethod {
+  SHIPPING
+  EVENT_PICKUP
+  IN_PERSON
+}
+
+/// De donde salio el texto del comprobante. Define cuanto confiamos.
+enum OcrSource {
+  PDF_TEXT   // texto nativo extraido en el servidor: confiable
+  SERVER_OCR // OCR corrido en el servidor
+  CLIENT_OCR // OCR corrido en el navegador: el cliente podria mentir
+  NONE       // no se pudo leer nada
+}
+
+enum ReceiptStatus {
+  PENDING
+  NEEDS_REVIEW
+  AUTO_APPROVED
+  APPROVED
+  REJECTED
+}
+
+enum PostStatus {
+  PUBLISHED
+  BLOCKED // bloqueado por la moderacion Zero Funas
+  REMOVED
+}
+
+enum DisputeStatus {
+  OPEN
+  IN_REVIEW
+  RESOLVED
+  CLOSED
+}
+
+// ─────────────────────────── Modelos ───────────────────────────
+
+model User {
+  /// UUID que viene de auth.users de Supabase
+  id        String   @id @db.Uuid
+  email     String   @unique
+  name      String
+  avatarUrl String?
+  role      Role     @default(BUYER)
+  phone     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  store            Store?
+  orders           Order[]         @relation("BuyerOrders")
+  posts            Post[]
+  postLikes        PostLike[]
+  eventPhotos      EventPhoto[]
+  attendances      EventAttendee[]
+  organizedEvents  Event[]         @relation("EventOrganizer")
+  disputes         Dispute[]       @relation("DisputeAuthor")
+
+  @@index([role])
+  @@map("users")
+}
+
+model Store {
+  id         String   @id @default(cuid())
+  userId     String   @unique @db.Uuid
+  name       String
+  slug       String   @unique
+  storeType  String   @default("Cosmaker") // Cosmaker | Wigmaker | Propmaker | Tienda
+  zone       String
+  bio        String   @default("")
+  isVerified Boolean  @default(false)
+  /// Oculta los precios en el historial publico de ventas
+  hidePrices Boolean  @default(false)
+
+  // ── Datos para cobrar por transferencia ──
+  // Se comparan contra lo que el OCR lee del comprobante.
+  bankHolder String?
+  bankCuit   String?
+  bankCbu    String?
+  bankAlias  String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  products Product[]
+  orders   Order[]   @relation("SellerOrders")
+
+  @@index([zone])
+  @@map("stores")
+}
+
+model Product {
+  id          String        @id @default(cuid())
+  storeId     String
+  title       String
+  slug        String        @unique
+  /// Precio en centavos
+  price       Int
+  category    String
+  origin      ProductOrigin
+  size        String?
+  description String        @default("")
+  /// URLs publicas de Supabase Storage
+  images      String[]      @default([])
+  status      ProductStatus @default(LIVE)
+  zone        String
+  allowsShipping      Boolean @default(true)
+  allowsEventDelivery Boolean @default(false)
+  soldAt      DateTime?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  store  Store   @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  orders Order[]
+
+  @@index([status, createdAt])
+  @@index([origin, status])
+  @@index([category, status])
+  @@index([storeId, status])
+  @@map("products")
+}
+
+model Order {
+  id            String      @id @default(cuid())
+  /// Codigo corto legible: "CF-4K2P9M"
+  reference     String      @unique
+  buyerId       String      @db.Uuid
+  sellerStoreId String
+  productId     String
+
+  /// Montos en centavos
+  totalAmount Int
+  status      OrderStatus @default(AWAITING_RECEIPT)
+
+  deliveryMethod  DeliveryMethod?
+  shippingAddress String?
+  trackingCode    String?
+  eventId         String?
+
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  confirmedAt DateTime?
+  completedAt DateTime?
+
+  buyer       User      @relation("BuyerOrders", fields: [buyerId], references: [id])
+  sellerStore Store     @relation("SellerOrders", fields: [sellerStoreId], references: [id])
+  product     Product   @relation(fields: [productId], references: [id])
+  event       Event?    @relation(fields: [eventId], references: [id])
+  receipts    Receipt[]
+  disputes    Dispute[]
+
+  @@index([buyerId, status])
+  @@index([sellerStoreId, status])
+  @@map("orders")
+}
+
+model Receipt {
+  id      String @id @default(cuid())
+  orderId String
+
+  /// Ruta en Supabase Storage (bucket privado "receipts")
+  filePath String
+  fileName String
+  mimeType String
+  /// SHA-256 del archivo. Unico: bloquea reenviar el mismo comprobante.
+  fileHash String @unique
+
+  // ── Datos extraidos ──
+  /// Monto detectado en centavos
+  extractedAmount    Int?
+  extractedCuit      String?
+  extractedDate      DateTime?
+  extractedOperation String?
+  extractedCbu       String?
+  /// Texto crudo, recortado. Para auditoria y para depurar los regex.
+  rawText   String?   @db.Text
+  ocrSource OcrSource @default(NONE)
+
+  /// 0 a 100
+  confidenceScore Int           @default(0)
+  /// Motivos legibles: ["El monto no coincide", ...]
+  flags           String[]      @default([])
+  status          ReceiptStatus @default(PENDING)
+
+  reviewedBy String?   @db.Uuid
+  reviewedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId])
+  @@index([status])
+  @@map("receipts")
+}
+
+model Post {
+  id        String     @id @default(cuid())
+  authorId  String     @db.Uuid
+  content   String     @db.Text
+  tag       String     @default("General")
+  status    PostStatus @default(PUBLISHED)
+  /// Si la moderacion lo bloqueo, guardamos el motivo para auditar
+  /// el algoritmo y medir falsos positivos.
+  blockedReason String?
+  likeCount     Int      @default(0)
+  createdAt     DateTime @default(now())
+
+  author User       @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  likes  PostLike[]
+
+  @@index([status, createdAt])
+  @@map("posts")
+}
+
+model PostLike {
+  postId String
+  userId String @db.Uuid
+
+  post Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([postId, userId])
+  @@map("post_likes")
+}
+
+model Event {
+  id          String   @id @default(cuid())
+  organizerId String?  @db.Uuid
+  title       String
+  slug        String   @unique
+  date        DateTime
+  place       String
+  description String   @default("")
+  coverUrl    String?
+  createdAt   DateTime @default(now())
+
+  organizer User?           @relation("EventOrganizer", fields: [organizerId], references: [id])
+  photos    EventPhoto[]
+  attendees EventAttendee[]
+  orders    Order[]
+
+  @@index([date])
+  @@map("events")
+}
+
+model EventPhoto {
+  id        String   @id @default(cuid())
+  eventId   String
+  uploaderId String  @db.Uuid
+  /// URL publica de Supabase Storage
+  url       String
+  caption   String?
+  createdAt DateTime @default(now())
+
+  event    Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  uploader User  @relation(fields: [uploaderId], references: [id], onDelete: Cascade)
+
+  @@index([eventId, createdAt])
+  @@map("event_photos")
+}
+
+model EventAttendee {
+  eventId   String
+  userId    String   @db.Uuid
+  createdAt DateTime @default(now())
+
+  event Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([eventId, userId])
+  @@map("event_attendees")
+}
+
+/// Centro de Disputas: el canal privado al que se deriva todo lo que
+/// la moderacion saca del foro publico.
+model Dispute {
+  id        String        @id @default(cuid())
+  authorId  String        @db.Uuid
+  orderId   String?
+  type      String
+  detail    String        @db.Text
+  /// Si vino de un post bloqueado, guardamos el texto original.
+  sourceText String?      @db.Text
+  status    DisputeStatus @default(OPEN)
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+
+  author User   @relation("DisputeAuthor", fields: [authorId], references: [id], onDelete: Cascade)
+  order  Order? @relation(fields: [orderId], references: [id])
+
+  @@index([status, createdAt])
+  @@map("disputes")
+}

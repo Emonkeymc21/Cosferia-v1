@@ -1,0 +1,96 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+  body {
+    @apply bg-void text-ink antialiased;
+    overscroll-behavior-y: none;
+  }
+  ::selection {
+    @apply bg-chalk text-void;
+  }
+  :focus-visible {
+    @apply outline outline-2 outline-offset-2 outline-chalk rounded;
+  }
+}
+
+@layer components {
+  /* Firma del sistema: regla tecnica de medicion */
+  .measure-rail {
+    height: 22px;
+    background-image:
+      repeating-linear-gradient(90deg, #ff66a1 0 1px, transparent 1px 12px),
+      repeating-linear-gradient(90deg, #ff66a1 0 1.5px, transparent 1.5px 60px);
+    background-size: 100% 6px, 100% 12px;
+    background-position: bottom left;
+    background-repeat: repeat-x;
+    @apply border-b border-mathi opacity-50;
+  }
+
+  /* Grilla tecnica del mat de corte */
+  .cutting-mat {
+    background-color: #0a1913;
+    background-image:
+      linear-gradient(rgba(255, 255, 255, 0.045) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255, 255, 255, 0.045) 1px, transparent 1px),
+      linear-gradient(rgba(255, 102, 161, 0.07) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255, 102, 161, 0.07) 1px, transparent 1px);
+    background-size: 22px 22px, 22px 22px, 110px 110px, 110px 110px;
+  }
+
+  .hairline {
+    @apply border border-line;
+  }
+
+  .scanner::after {
+    content: '';
+    position: absolute;
+    left: 0;
+    right: 0;
+    height: 2px;
+    background: linear-gradient(90deg, transparent, #ff66a1, transparent);
+    @apply animate-scanline;
+  }
+}
+
+@layer utilities {
+  .no-bar::-webkit-scrollbar {
+    display: none;
+  }
+  .no-bar {
+    scrollbar-width: none;
+  }
+  .pb-safe {
+    padding-bottom: calc(env(safe-area-inset-bottom) + 4.6rem);
+  }
+  @media (min-width: 768px) {
+    .pb-safe {
+      padding-bottom: 3rem;
+    }
+  }
+}
+
+::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+::-webkit-scrollbar-track {
+  background: #0d0e12;
+}
+::-webkit-scrollbar-thumb {
+  background: #252a35;
+  border-radius: 9px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}
